@@ -1,0 +1,22 @@
+# zorc app contract.
+#
+# A Zetaris-compatible read-only SQL endpoint over the four FloodSense
+# contract views. It is not Zetaris; see README.md.
+name: floodsense-sql
+port: 8080
+memory_mb: 384
+
+domains:
+  - floodsense-sql.zaindroid.me
+
+# A dedicated Postgres holds the seed views. No AI, no cache.
+database: true
+redis: false
+ai: false
+
+env:
+  # The bearer token the agents present. Tied to no external account, but
+  # the agents need the same value, so it is supplied at deploy time rather
+  # than generated where it could not be read back.
+  SQL_API_KEY:
+    required: true
