@@ -85,3 +85,41 @@ Point `ZETARIS_REST_URL` at the Zetaris REST base (`…:8888/api/v1.0`) and set
 `ZETARIS_API_KEY` from your own Zetaris UI. Nothing else changes: the agents
 send the same SQL, and the audit panel will say the queries reached Zetaris
 rather than naming this service.
+
+## Reaching the real Zetaris from anywhere
+
+Zetaris runs on `servingz`, which has no public IP, and its REST port is
+bound to a tailnet. Anyone not on that tailnet cannot reach it. This service
+can, because it runs on a node that is both public and on the tailnet, so it
+forwards the one call the agents make:
+
+```
+POST https://floodsense-sql.zaindroid.me/zetaris/api/v1.0/sql-editor/sqls/run
+GET  https://floodsense-sql.zaindroid.me/zetaris/ready
+Authorization: Bearer $SQL_API_KEY
+```
+
+Point the agents at it by changing one variable, and nothing else:
+
+```bash
+ZETARIS_REST_URL=https://floodsense-sql.zaindroid.me/zetaris/api/v1.0
+ZETARIS_ORG_ID=1
+ZETARIS_API_KEY=<the same key as SQL_API_KEY>
+```
+
+Two things it adds over reaching the engine directly:
+
+* **one shared key instead of the engine's admin password.** The password
+  stays on `servingz`; a caller never holds it and it can be rotated without
+  telling anyone.
+* **the same read-only guard** this service applies to its own queries, so a
+  leaked key cannot write through this door even though the engine itself
+  accepts DDL.
+
+It does not pretend to be the engine. Replies pass through untouched, so they
+carry no `engine` field and no `X-Engine`, and an agent reading one reports
+`zetaris` -- true, because the statement ran on Lightning. The hop is in
+`X-Via`.
+
+`/zetaris/*` is the real engine. `/api/v1.0/*` is this service's own Postgres
+and still answers `X-Engine: floodsense-sql`. Same four views either way.

@@ -20,3 +20,16 @@ env:
   # than generated where it could not be read back.
   SQL_API_KEY:
     required: true
+
+  # The real Zetaris, for the /zetaris passthrough. This node is both public
+  # and on the tailnet the engine is bound to, which is the whole reason the
+  # passthrough lives here. All four may be absent: those routes then answer
+  # 503 and the rest of the service is unaffected.
+  ZETARIS_UPSTREAM_URL:
+    required: false
+  ZETARIS_UPSTREAM_ORG_ID:
+    required: false
+  ZETARIS_UPSTREAM_USER:
+    required: false
+  ZETARIS_UPSTREAM_PASSWORD:
+    required: false

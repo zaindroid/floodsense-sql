@@ -34,9 +34,13 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from psycopg.rows import tuple_row
 from psycopg_pool import ConnectionPool
 
-from app import live
+from base64 import b64decode
+
+from app import live, upstream
 
 ENGINE = "floodsense-sql"
+# Everything under here is the real engine answering, not this service.
+FORWARDED = "/zetaris"
 VIEWS = ("hazard_timeline", "discharge_daily", "exposure_join", "provenance")
 
 logging.basicConfig(
@@ -142,7 +146,10 @@ app = FastAPI(
 @app.middleware("http")
 async def name_the_engine(request: Request, call_next):
     response = await call_next(request)
-    response.headers["X-Engine"] = ENGINE
+    if request.url.path.startswith(FORWARDED):
+        response.headers["X-Via"] = ENGINE
+    else:
+        response.headers["X-Engine"] = ENGINE
     return response
 
 
@@ -314,7 +321,16 @@ def version() -> dict:
 
 
 def _bearer(authorization: str | None) -> None:
-    token = (authorization or "").removeprefix("Bearer ").strip()
+    """Accept the key as a bearer token, or as the password half of basic
+    auth: a Zetaris client given a user and password sends it that way."""
+    raw = (authorization or "").strip()
+    if raw.startswith("Basic "):
+        try:
+            token = b64decode(raw[6:]).decode("utf-8", "replace").split(":", 1)[1]
+        except (ValueError, IndexError):
+            token = ""
+    else:
+        token = raw.removeprefix("Bearer ").strip()
     if not token or not secrets.compare_digest(token, API_KEY):
         raise HTTPException(status_code=401, detail="bad or missing bearer token")
 
@@ -375,6 +391,55 @@ def _json_safe(v):
     if hasattr(v, "isoformat"):  # date
         return v.isoformat()
     return v
+
+
+# --- the same calls, forwarded to the real engine ------------------------
+
+
+@app.get("/zetaris/ready")
+def zetaris_ready(authorization: str | None = Header(default=None)) -> dict:
+    """Whether the engine is reachable from here and the credential still
+    works. Where it lives is not a caller's business."""
+    _bearer(authorization)
+    try:
+        return upstream.probe()
+    except upstream.Unavailable as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    except upstream.Upstream as e:
+        raise HTTPException(status_code=502, detail=e.body) from e
+
+
+@app.get("/zetaris/api/v1.0/auth/login")
+def zetaris_login(authorization: str | None = Header(default=None)) -> dict:
+    """Callers present the shared key here too, and get it back as the token.
+    The engine's own password never leaves its host."""
+    _bearer(authorization)
+    return {"idToken": API_KEY, "refreshToken": API_KEY}
+
+
+@app.post("/zetaris/api/v1.0/sql-editor/sqls/run")
+def zetaris_run(
+    body: dict,
+    authorization: str | None = Header(default=None),
+    x_request_id: str | None = Header(default=None),
+) -> dict:
+    _bearer(authorization)
+    try:
+        sql = check_sql(body.get("sql", ""))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    limit = min(int(body.get("limit") or ROW_CAP), ROW_CAP)
+    try:
+        js = upstream.run_sql(sql, limit=limit, query_id=body.get("queryId"))
+    except upstream.Unavailable as e:
+        log.warning("upstream unreachable rid=%s: %s", x_request_id, e)
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    except upstream.Upstream as e:
+        raise HTTPException(status_code=e.status, detail=e.body) from e
+
+    log.info("forwarded rid=%s view=%s rows=%s", x_request_id, _view_of(sql), js.get("total"))
+    return js
 
 
 if __name__ == "__main__":
