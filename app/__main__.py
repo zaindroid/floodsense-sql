@@ -578,6 +578,20 @@ async def console_proxy(path: str, request: Request) -> Response:
         log.warning("console unreachable: %s", e)
         raise HTTPException(status_code=502, detail=str(e)) from e
 
+    # Logged because the console's login failure is only visible from here:
+    # the engine authenticates, hands the console a session, and the console's
+    # next call arrives without it. Names of the cookies each way, never
+    # values, and assets are left out so the trail stays readable.
+    if not path.startswith(("_next/", "assets/", "favicon", "icon")):
+        sent = ",".join(sorted(request.cookies)) or "-"
+        got = ",".join(
+            sorted(v.split("=", 1)[0].strip() for k, v in headers if k.lower() == "set-cookie")
+        ) or "-"
+        log.info(
+            "console %s /%s -> %s  cookies in=[%s] out=[%s]",
+            request.method, path, status, sent, got,
+        )
+
     r = Response(content=payload, status_code=status)
     r.headers["X-Via"] = ENGINE
     # Nothing relayed may rest in a shared cache: the gate is the only thing
