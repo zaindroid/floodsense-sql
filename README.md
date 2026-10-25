@@ -141,7 +141,11 @@ one shared password:
 https://floodsense-sql.zaindroid.me/console      user and password: ask Zain
 ```
 
-The browser is asked for the password once, keeps a 12-hour cookie, and then
+With `UI_USER` and `UI_PASSWORD` set, the browser is asked for that password
+once and keeps a 12-hour cookie. With both unset the console is open to the
+internet and its own Zetaris login is the only lock -- which is how it runs
+today, deliberately, so anyone with the link can use it. Setting the two
+variables again closes it, with no rebuild. Either way
 the console behaves as it does on the tailnet -- its own Zetaris login still
 applies behind the gate. Paths the console owns (`/login`, `/_next`,
 `/assets`) are served from the root, so it cannot be mounted under a prefix;

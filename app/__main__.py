@@ -516,6 +516,8 @@ def _console_gate(request: Request) -> bool:
     """Has this browser given the shared password? Basic the first time, the
     cookie after, because the application fetches from the root and browsers
     do not reliably re-send basic credentials for every path of an origin."""
+    if not ui.gated():
+        return True
     if ui.cookie_ok(request.cookies.get(ui.COOKIE)):
         return True
     return ui.password_ok(request.headers.get("authorization"))
@@ -539,6 +541,8 @@ def console(request: Request) -> Response:
     if not _console_gate(request):
         return _ask_for_the_password()
     r = RedirectResponse("/login", status_code=302)
+    if not ui.gated():
+        return r
     r.set_cookie(
         ui.COOKIE, ui.issue(), max_age=ui.TTL_S, httponly=True, secure=True, samesite="lax"
     )

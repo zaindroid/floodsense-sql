@@ -13,10 +13,12 @@ nothing here grants a Zetaris account.
 
 Reads and writes both go through, deliberately: the console is how
 migrations and new Lightning tables get made, which is the reason to want it.
-That is the opposite of the /zetaris lane, which is read-only on purpose, so
-this gate is the only thing standing in front of a writable engine -- it is
-checked in constant time and the password belongs in UI_PASSWORD, nowhere
-else.
+That is the opposite of the /zetaris lane, which is read-only on purpose.
+
+The gate is optional. With UI_USER and UI_PASSWORD set it is checked in
+constant time before anything is relayed; with both unset the console is
+open to the internet and its own login is the only thing in front of a
+writable engine.
 """
 
 from __future__ import annotations
@@ -86,7 +88,19 @@ class Unavailable(RuntimeError):
 
 
 def configured() -> bool:
-    return bool(URL and USER and PASSWORD)
+    """Whether there is a console to forward at all."""
+    return bool(URL)
+
+
+def gated() -> bool:
+    """Whether a password stands in front of it.
+
+    Both halves unset means open to the internet, with the console's own
+    login as the only lock. That is a setting rather than an oversight: it
+    is reversible by setting UI_USER and UI_PASSWORD again, with no code
+    change and no rebuild.
+    """
+    return bool(USER and PASSWORD)
 
 
 def _mac(stamp: str) -> str:
