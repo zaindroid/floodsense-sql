@@ -135,6 +135,39 @@ _NEVER = re.compile(
 )
 
 
+def _bare(sql: str) -> str:
+    """The statement with its comments removed.
+
+    A migration arrives with its header comments attached, so a check against
+    the first word has to look past them -- and a keyword hidden in a comment
+    must not count against the statement either. Quoted text is left alone:
+    a view's own SQL can contain anything.
+    """
+    out, i, n = [], 0, len(sql)
+    quote = ""
+    while i < n:
+        c = sql[i]
+        if quote:
+            out.append(c)
+            if c == quote:
+                quote = ""
+            i += 1
+        elif c in "'\"":
+            quote = c
+            out.append(c)
+            i += 1
+        elif sql.startswith("--", i):
+            j = sql.find("\n", i)
+            i = n if j < 0 else j
+        elif sql.startswith("/*", i):
+            j = sql.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out).strip()
+
+
 def check_write_sql(sql: str) -> str:
     """The guard for a caller holding the write key."""
     text = (sql or "").strip()
@@ -142,11 +175,14 @@ def check_write_sql(sql: str) -> str:
         text = text[:-1].strip()
     if not text:
         raise ValueError("no statement")
-    if ";" in text:
+    bare = _bare(text)
+    if not bare:
+        raise ValueError("no statement")
+    if ";" in bare:
         raise ValueError("one statement per query; ';' is not allowed")
-    if not _MAY_WRITE.match(text):
+    if not _MAY_WRITE.match(bare):
         raise ValueError("the write key runs CREATE, REFRESH and reads, nothing else")
-    if _NEVER.search(text):
+    if _NEVER.search(bare):
         raise ValueError("dropping, deleting or altering is not available through this endpoint")
     return text
 

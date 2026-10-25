@@ -65,12 +65,40 @@ class LaneTest(unittest.TestCase):
             "ALTER TABLE t ADD COLUMN c INT",
             "UPDATE t SET c = 1",
         ):
-            r = self.post(ENGINE, WRITE_KEY, sql)
-            self.assertEqual(r.status_code, REFUSED, sql)
+            self.assertEqual(self.post(ENGINE, WRITE_KEY, sql).status_code, REFUSED, sql)
 
     def test_a_statement_that_hides_a_second_one_is_refused(self) -> None:
-        sql = CREATE + "; DROP VIEW floodsense.v"
-        self.assertEqual(self.post(ENGINE, WRITE_KEY, sql).status_code, REFUSED)
+        self.assertEqual(
+            self.post(ENGINE, WRITE_KEY, CREATE + "; DROP VIEW floodsense.v").status_code,
+            REFUSED,
+        )
+
+    def test_a_statement_is_read_past_its_comments(self) -> None:
+        """Migrations arrive with their header comments attached.
+
+        The first version of this guard matched the first word of the raw
+        text, which refused every real migration: they all open with a
+        comment block.
+        """
+        sql = "-- view: floodsense.v\n-- columns: n int\n-- min_rows: 1\n" + CREATE
+        self.assertEqual(self.post(ENGINE, WRITE_KEY, sql).status_code, ALLOWED)
+
+    def test_a_word_in_a_comment_is_not_the_statement(self) -> None:
+        sql = "-- replaces the view 017 would otherwise drop\n" + CREATE
+        self.assertEqual(self.post(ENGINE, WRITE_KEY, sql).status_code, ALLOWED)
+
+    def test_a_comment_cannot_hide_what_follows_it(self) -> None:
+        for sql in (
+            "-- harmless\nDROP VIEW floodsense.v",
+            "/* harmless */ DELETE FROM t",
+            CREATE + " -- and then\nDROP VIEW floodsense.v",
+        ):
+            self.assertEqual(self.post(ENGINE, WRITE_KEY, sql).status_code, REFUSED, sql)
+
+    def test_quoted_text_is_left_alone(self) -> None:
+        # A view's own SQL may contain anything; only comments are stripped.
+        sql = "CREATE OR REPLACE SCHEMASTORE VIEW v WITH CONTAINER c AS SELECT '--not a comment' AS s"
+        self.assertEqual(self.post(ENGINE, WRITE_KEY, sql).status_code, ALLOWED)
 
     def test_the_seed_lane_stays_read_only_for_both_keys(self) -> None:
         # It is this service's own Postgres on a read-only role. The write key
