@@ -42,12 +42,8 @@ TTL_S = 12 * 3600
 TIMEOUT_S = 60
 REALM = 'Basic realm="FloodSense console", charset="UTF-8"'
 
-# Hop-by-hop headers describe one connection and must not be relayed. The
-# gate's own credentials and cookie stop here too: the console must not see
-# them, and an upstream that answered 401 to our Authorization header would
-# look like a broken login.
+# Hop-by-hop headers describe one connection and must not be relayed.
 _DROP_REQUEST = {
-    "authorization",
     "connection",
     "keep-alive",
     "upgrade",
@@ -154,6 +150,15 @@ def forward(
     # host it believes it is serving -- replacing Host breaks the login while
     # leaving every page and asset working, so it fails in the one place
     # nobody tests first.
+    # Only the gate's own credential stops here. Everything else is the
+    # console's: after signing in, its pages carry the engine's token as
+    # "Authorization: Bearer ...", and dropping that header wholesale meant
+    # the engine saw every call unauthenticated and answered 401, which the
+    # console showed as a failed login -- a login that had in fact succeeded.
+    auth = send.get("authorization", "")
+    if auth.strip().lower().startswith("basic "):
+        send.pop("authorization", None)
+
     host = send.get("host") or urllib.parse.urlsplit(URL).netloc
     send["Host"] = host
     send.setdefault("X-Forwarded-Host", host)
