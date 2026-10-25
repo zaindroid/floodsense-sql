@@ -442,11 +442,11 @@ def run_sql(
     authorization: str | None = Header(default=None),
     x_request_id: str | None = Header(default=None),
 ) -> dict:
-    lane = _bearer(authorization)
+    # Reads only, whichever key is presented: the seed lane is this service's
+    # own Postgres, and the write key is about the engine.
+    _bearer(authorization)
     try:
-        sql = check_write_sql(body["sql"]) if lane == WRITE else check_sql(body.get("sql", ""))
-    except KeyError as e:
-        raise HTTPException(status_code=400, detail="no statement") from e
+        sql = check_sql(body.get("sql", ""))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -536,9 +536,9 @@ def zetaris_run(
     authorization: str | None = Header(default=None),
     x_request_id: str | None = Header(default=None),
 ) -> dict:
-    _bearer(authorization)
+    lane = _bearer(authorization)
     try:
-        sql = check_sql(body.get("sql", ""))
+        sql = check_write_sql(body.get("sql", "")) if lane == WRITE else check_sql(body.get("sql", ""))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
