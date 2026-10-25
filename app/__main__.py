@@ -79,6 +79,11 @@ def _require(name: str) -> str:
 
 DATABASE_URL = _require("DATABASE_URL")
 API_KEY = _require("SQL_API_KEY")
+# The write lane. Absent, and nothing but reads can reach the engine through
+# here, which is how this service started. It is a second key rather than a
+# flag on the first so that handing someone read access stays harmless.
+WRITE_KEY = os.environ.get("SQL_WRITE_KEY", "").strip()
+READ, WRITE = "read", "write"
 SCHEMA = os.environ.get("SQL_SCHEMA", "floodsense_seed")
 ROW_CAP = int(os.environ.get("SQL_ROW_CAP", "5000"))
 STATEMENT_TIMEOUT_MS = int(os.environ.get("SQL_STATEMENT_TIMEOUT_MS", "20000"))
@@ -115,6 +120,34 @@ def check_sql(sql: str) -> str:
         raise ValueError("one statement per query; ';' is not allowed")
     if _FORBIDDEN.search(text):
         raise ValueError("only reads are allowed; this statement could write")
+    return text
+
+
+# A migration creates things and refreshes them; it never deletes or edits
+# rows. Anything outside that list is refused here rather than argued about
+# with the engine, and DROP stays out on purpose: these migrations are
+# append-only, and an engine object removed by a bot is not recoverable from
+# this side.
+_MAY_WRITE = re.compile(r"^\s*(create|refresh|select|with|show|describe|desc)\b", re.I)
+_NEVER = re.compile(
+    r"\b(drop|delete|truncate|alter|grant|revoke|insert|update)\b",
+    re.I,
+)
+
+
+def check_write_sql(sql: str) -> str:
+    """The guard for a caller holding the write key."""
+    text = (sql or "").strip()
+    while text.endswith(";"):
+        text = text[:-1].strip()
+    if not text:
+        raise ValueError("no statement")
+    if ";" in text:
+        raise ValueError("one statement per query; ';' is not allowed")
+    if not _MAY_WRITE.match(text):
+        raise ValueError("the write key runs CREATE, REFRESH and reads, nothing else")
+    if _NEVER.search(text):
+        raise ValueError("dropping, deleting or altering is not available through this endpoint")
     return text
 
 
@@ -374,9 +407,12 @@ def version() -> dict:
 # --- the Zetaris calls the agents make ------------------------------------
 
 
-def _bearer(authorization: str | None) -> None:
-    """Accept the key as a bearer token, or as the password half of basic
-    auth: a Zetaris client given a user and password sends it that way."""
+def _bearer(authorization: str | None) -> str:
+    """Which lane this caller is in, by the key they presented.
+
+    Accepts the key as a bearer token or as the password half of basic auth:
+    a Zetaris client given a user and password sends it that way.
+    """
     raw = (authorization or "").strip()
     if raw.startswith("Basic "):
         try:
@@ -385,8 +421,11 @@ def _bearer(authorization: str | None) -> None:
             token = ""
     else:
         token = raw.removeprefix("Bearer ").strip()
-    if not token or not secrets.compare_digest(token, API_KEY):
-        raise HTTPException(status_code=401, detail="bad or missing bearer token")
+    if WRITE_KEY and token and secrets.compare_digest(token, WRITE_KEY):
+        return WRITE
+    if token and secrets.compare_digest(token, API_KEY):
+        return READ
+    raise HTTPException(status_code=401, detail="bad or missing bearer token")
 
 
 @app.get("/api/v1.0/auth/login")
@@ -403,9 +442,11 @@ def run_sql(
     authorization: str | None = Header(default=None),
     x_request_id: str | None = Header(default=None),
 ) -> dict:
-    _bearer(authorization)
+    lane = _bearer(authorization)
     try:
-        sql = check_sql(body.get("sql", ""))
+        sql = check_write_sql(body["sql"]) if lane == WRITE else check_sql(body.get("sql", ""))
+    except KeyError as e:
+        raise HTTPException(status_code=400, detail="no statement") from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -478,10 +519,15 @@ def zetaris_ready(authorization: str | None = Header(default=None)) -> dict:
 
 @app.get("/zetaris/api/v1.0/auth/login")
 def zetaris_login(authorization: str | None = Header(default=None)) -> dict:
-    """Callers present the shared key here too, and get it back as the token.
-    The engine's own password never leaves its host."""
-    _bearer(authorization)
-    return {"idToken": API_KEY, "refreshToken": API_KEY}
+    """Callers present their key here too, and get it back as the token.
+
+    The engine's own password never leaves its host. The token handed back is
+    the one the caller came with, so a client that logs in and then uses the
+    idToken -- zetaris_sync.py does exactly that -- stays in its own lane.
+    """
+    lane = _bearer(authorization)
+    key = WRITE_KEY if lane == WRITE else API_KEY
+    return {"idToken": key, "refreshToken": key}
 
 
 @app.post("/zetaris/api/v1.0/sql-editor/sqls/run")
@@ -505,7 +551,14 @@ def zetaris_run(
     except upstream.Upstream as e:
         raise HTTPException(status_code=e.status, detail=e.body) from e
 
-    log.info("forwarded rid=%s view=%s rows=%s", x_request_id, _view_of(sql), js.get("total"))
+    # The lane is in the line because a write is worth being able to find.
+    log.info(
+        "forwarded rid=%s lane=%s view=%s rows=%s",
+        x_request_id,
+        lane,
+        _view_of(sql),
+        js.get("total"),
+    )
     return js
 
 

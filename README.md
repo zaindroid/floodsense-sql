@@ -166,3 +166,24 @@ again -- no rebuild is involved.
 Websockets are not forwarded. The console's pages and queries are plain
 HTTP; if some panel turns out to need a socket, it will be the thing that
 does not work.
+
+## The write lane
+
+`SQL_API_KEY` runs `SELECT` and `WITH`, and nothing else. A second key,
+`SQL_WRITE_KEY`, runs `CREATE`, `REFRESH` and reads on the `/zetaris` path --
+the statements a migration is made of. `DROP`, `DELETE`, `TRUNCATE`, `ALTER`,
+`GRANT`, `REVOKE`, `INSERT` and `UPDATE` are refused whichever key is used:
+these migrations are append-only, and an engine object a bot removed does not
+come back from this side.
+
+Unset `SQL_WRITE_KEY` and the path runs reads only, which is how this service
+shipped.
+
+`scripts/zetaris_sync.py` in the monorepo works against it unchanged:
+
+    ZETARIS_REST_URL=https://floodsense-sql.zaindroid.me/zetaris/api/v1.0
+    ZETARIS_API_KEY=<the write key>
+
+The engine's own password stays on its host. `/auth/login` hands back the key
+the caller arrived with, so a client that logs in and then uses the idToken
+stays in the lane it started in.

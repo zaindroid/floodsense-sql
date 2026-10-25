@@ -21,6 +21,12 @@ env:
   SQL_API_KEY:
     required: true
 
+  # The write lane on /zetaris. Absent, and that path runs reads only, which
+  # is how this service shipped. A second key rather than a flag on the first:
+  # read access stays something that can be handed out without consequence.
+  SQL_WRITE_KEY:
+    required: false
+
   # The real Zetaris, for the /zetaris passthrough. This node is both public
   # and on the tailnet the engine is bound to, which is the whole reason the
   # passthrough lives here. All four may be absent: those routes then answer
