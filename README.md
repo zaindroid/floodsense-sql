@@ -130,3 +130,35 @@ carry no `engine` field and no `X-Engine`, and an agent reading one reports
 
 `/zetaris/*` is the real engine. `/api/v1.0/*` is this service's own Postgres
 and still answers `X-Engine: floodsense-sql`. Same four views either way.
+
+## The engine's console, from anywhere
+
+The Zetaris console listens on localhost on the host that runs the engine,
+and that host has no public IP. `/console` forwards it from this one, behind
+one shared password:
+
+```
+https://floodsense-sql.zaindroid.me/console      user and password: ask Zain
+```
+
+The browser is asked for the password once, keeps a 12-hour cookie, and then
+the console behaves as it does on the tailnet -- its own Zetaris login still
+applies behind the gate. Paths the console owns (`/login`, `/_next`,
+`/assets`) are served from the root, so it cannot be mounted under a prefix;
+every route this service defines answers for itself first and only what is
+left over is forwarded.
+
+Unlike the `/zetaris` lane this is **not** read-only. The console is how
+migrations and new Lightning tables get made, which is the reason to want it
+reachable, so `UI_PASSWORD` is the only thing standing in front of a writable
+engine. Set it to something long, and rotate it by setting the variable
+again -- no rebuild is involved.
+
+| variable | |
+|---|---|
+| `ZETARIS_UI_URL` | where the console listens, reachable from this host |
+| `UI_USER` / `UI_PASSWORD` | the shared credentials the gate checks |
+
+Websockets are not forwarded. The console's pages and queries are plain
+HTTP; if some panel turns out to need a socket, it will be the thing that
+does not work.

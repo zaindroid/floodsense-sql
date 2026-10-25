@@ -30,13 +30,15 @@ from typing import Any
 
 import psycopg
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from psycopg.rows import tuple_row
+from starlette.concurrency import run_in_threadpool
 from psycopg_pool import ConnectionPool
 
 from base64 import b64decode
 
-from app import live, upstream
+from app import live, ui, upstream
 
 ENGINE = "floodsense-sql"
 # Everything under here is the real engine answering, not this service.
@@ -167,7 +169,11 @@ async def name_the_engine(request: Request, call_next):
         request.scope["path"] = path = FORWARDED + path
 
     response = await call_next(request)
-    if path.startswith(FORWARDED):
+    # X-Engine means this service answered. A reply that was relayed -- the
+    # forwarded lane, or the console -- says X-Via instead, so a caller is
+    # never told that something came from here when it did not. The console
+    # marks itself, because it answers on paths this service does not own.
+    if path.startswith(FORWARDED) or "x-via" in response.headers:
         response.headers["X-Via"] = ENGINE
     else:
         response.headers["X-Engine"] = ENGINE
@@ -267,7 +273,8 @@ ZETARIS_ORG_ID=1</pre>
 that is not a single SELECT or WITH is refused, and the connection is READ ONLY.</p>
 
 <h2>also</h2>
-<p><a href="/views">/views</a> — every view with its columns.
+<p><a href="/console">/console</a> — the engine's own console, behind the shared password.
+<a href="/views">/views</a> — every view with its columns.
 <a href="/zetaris/ready">/zetaris/ready</a> — row counts, 503 if a view is empty.
 <a href="/openapi.json">/openapi.json</a> — the spec.</p>
 </main></body></html>"""
@@ -500,6 +507,81 @@ def zetaris_run(
 
     log.info("forwarded rid=%s view=%s rows=%s", x_request_id, _view_of(sql), js.get("total"))
     return js
+
+
+CONSOLE = "/console"
+
+
+def _console_gate(request: Request) -> bool:
+    """Has this browser given the shared password? Basic the first time, the
+    cookie after, because the application fetches from the root and browsers
+    do not reliably re-send basic credentials for every path of an origin."""
+    if ui.cookie_ok(request.cookies.get(ui.COOKIE)):
+        return True
+    return ui.password_ok(request.headers.get("authorization"))
+
+
+def _ask_for_the_password() -> Response:
+    return Response(
+        status_code=401,
+        content="the console needs the shared password",
+        headers={"WWW-Authenticate": ui.REALM},
+        media_type="text/plain",
+    )
+
+
+@app.get(CONSOLE)
+def console(request: Request) -> Response:
+    """Where a person starts. The console itself lives at its own paths, so
+    this only takes the password and hands over."""
+    if not ui.configured():
+        raise HTTPException(status_code=503, detail="no console configured")
+    if not _console_gate(request):
+        return _ask_for_the_password()
+    r = RedirectResponse("/login", status_code=302)
+    r.set_cookie(
+        ui.COOKIE, ui.issue(), max_age=ui.TTL_S, httponly=True, secure=True, samesite="lax"
+    )
+    return r
+
+
+# Registered last, so every route above answers for itself and only what is
+# left over reaches the console. The console claims the rest of the namespace
+# (/login, /_next, /assets) and redirects anything it does not know to its
+# own login, which is why it cannot be mounted under a prefix.
+@app.api_route(
+    "/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+)
+async def console_proxy(path: str, request: Request) -> Response:
+    if not ui.configured():
+        raise HTTPException(status_code=404, detail="not found")
+    if not _console_gate(request):
+        return _ask_for_the_password()
+
+    # Async so the request body can be read, then the blocking relay runs in
+    # the threadpool where every other route in this service already runs.
+    body = await request.body()
+    try:
+        status, headers, payload = await run_in_threadpool(
+            ui.forward,
+            request.method,
+            "/" + path,
+            request.url.query,
+            list(request.headers.items()),
+            body,
+        )
+    except ui.Unavailable as e:
+        log.warning("console unreachable: %s", e)
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+    r = Response(content=payload, status_code=status)
+    r.headers["X-Via"] = ENGINE
+    for k, v in headers:
+        if k.lower() == "set-cookie":
+            r.raw_headers.append((b"set-cookie", v.encode("latin-1", "replace")))
+        else:
+            r.headers[k] = v
+    return r
 
 
 if __name__ == "__main__":

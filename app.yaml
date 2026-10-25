@@ -33,3 +33,14 @@ env:
     required: false
   ZETARIS_UPSTREAM_PASSWORD:
     required: false
+
+  # The engine's own console, forwarded at /console behind UI_PASSWORD. The
+  # console is writable -- it is how migrations get made -- so this password
+  # is the only thing in front of it. All three absent: /console answers 503
+  # and no other path changes.
+  ZETARIS_UI_URL:
+    required: false
+  UI_USER:
+    required: false
+  UI_PASSWORD:
+    required: false
