@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import urllib.error
 import urllib.request
@@ -110,15 +111,28 @@ def _token_now(force: bool = False) -> str:
         return _token
 
 
+# A statement the engine refused names an error class in brackets, or says
+# what it expected. Anything else in a 400 is about the caller, not the SQL.
+_STATEMENT_ERROR = re.compile(rb"\[[A-Z][A-Z0-9_.]+]|wrong type|expecting", re.I)
+
+
 def _token_rejected(status: int, body: bytes) -> bool:
-    """Measured, because it is not what you would guess: a stale token is
-    400 {"msg":"Not Allowed"}, not 401. A rejected SQL statement is also
-    400, so the body has to be read to tell a dead token from a bad query.
-    A missing Authorization header is the only 401.
+    """Measured, because it is not what you would guess: a stale token is a
+    400, and has come back as both {"msg":"Not Allowed"} and {"msg":"Bad
+    Request"}. A missing Authorization header is the only 401.
+
+    A refused statement is 400 as well, so the rule reads the body -- but the
+    other way round from the obvious one. Listing the token wordings meant the
+    second one, which turned up a day later, stopped every query including
+    SELECT 1 until the process was restarted. So a 400 counts as a token
+    problem unless the body names the statement, and an unknown wording costs
+    one extra round trip instead of a session.
     """
     if status in (401, 403):
         return True
-    return status == 400 and b"not allowed" in body.lower()
+    if status != 400:
+        return False
+    return not _STATEMENT_ERROR.search(body)
 
 
 def run_sql(sql: str, *, limit: int, query_id: str | None) -> dict:

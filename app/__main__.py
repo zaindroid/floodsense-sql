@@ -51,6 +51,11 @@ ENGINE_HOSTS = {
 
 
 def _is_engine_host(request: Request) -> bool:
+    """Whether this request is about the real engine rather than this service:
+    it either arrived on the engine's own hostname, or it was addressed to the
+    forwarded path."""
+    if request.scope.get("path", "").startswith(FORWARDED):
+        return True
     return (request.headers.get("host") or "").split(":")[0].lower() in ENGINE_HOSTS
 VIEWS = ("hazard_timeline", "discharge_daily", "exposure_join", "provenance")
 
@@ -181,6 +186,9 @@ def index(request: Request) -> str:
     """
     engine_host = _is_engine_host(request)
     host = (request.headers.get("host") or "floodsense-sql.zaindroid.me").split(":")[0]
+    # Reached by path rather than by hostname: every example has to carry the
+    # prefix, or a reader copies a URL that is not the one they opened.
+    prefix = FORWARDED if request.scope.get("path", "").startswith(FORWARDED) else ""
 
     if engine_host:
         # The counts here are this service's own Postgres, which is not what
@@ -213,7 +221,7 @@ def index(request: Request) -> str:
                 "agents can run against a real database now. Every answer carries "
                 f"<code>X-Engine: {ENGINE}</code> and an <code>engine</code> field, so a "
                 "run can report which engine answered. For the real engine, use "
-                '<a href="https://zetaris.zaindroid.me/">zetaris.zaindroid.me</a>.')
+                '<a href="/zetaris">/zetaris</a>.')
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -246,14 +254,14 @@ def index(request: Request) -> str:
 <table>{rows}</table>
 
 <h2>point your agents here</h2>
-<pre>ZETARIS_REST_URL=https://{host}/api/v1.0
+<pre>ZETARIS_REST_URL=https://{host}{prefix}/api/v1.0
 ZETARIS_API_KEY=&lt;ask Zain&gt;
 ZETARIS_ORG_ID=1</pre>
 <p>Nothing else changes: the agents send the same SQL they send to Zetaris, and
 <code>FF_LIVE_DATA</code> keeps its meaning.</p>
 
 <h2>or call it directly</h2>
-<pre>curl -X POST https://{host}/api/v1.0/sql-editor/sqls/run   -H "Authorization: Bearer $KEY" -H "content-type: application/json"   -d '{{"sql":"SELECT segment, count(*) FROM {SCHEMA}.exposure_join
+<pre>curl -X POST https://{host}{prefix}/api/v1.0/sql-editor/sqls/run   -H "Authorization: Bearer $KEY" -H "content-type: application/json"   -d '{{"sql":"SELECT segment, count(*) FROM {SCHEMA}.exposure_join
             WHERE in_footprint GROUP BY segment","limit":20}}'</pre>
 <p>Answers <code>{{"headers":[{{"name":…}}],"data":[[…]]}}</code>. Reads only: a statement
 that is not a single SELECT or WITH is refused, and the connection is READ ONLY.</p>
@@ -433,6 +441,19 @@ def _json_safe(v):
 
 
 # --- the same calls, forwarded to the real engine ------------------------
+
+
+@app.get(FORWARDED, response_class=HTMLResponse)
+@app.get(FORWARDED + "/api/v1.0", response_class=HTMLResponse)
+def forwarded_index(request: Request) -> str:
+    """The forwarded lane, opened in a browser.
+
+    Everything under this prefix is the engine's own call shape, so the base
+    path had no route of its own and answered {"detail":"Not Found"} -- which
+    is the first thing a person sees when they are handed the URL to put in
+    their environment.
+    """
+    return index(request)
 
 
 @app.get("/zetaris/ready")
