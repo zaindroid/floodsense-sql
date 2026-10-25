@@ -41,6 +41,17 @@ from app import live, upstream
 ENGINE = "floodsense-sql"
 # Everything under here is the real engine answering, not this service.
 FORWARDED = "/zetaris"
+# Hostnames on which every call means the real engine, so the engine's own
+# URL works unchanged: swap the host and nothing else.
+ENGINE_HOSTS = {
+    h.strip().lower()
+    for h in os.environ.get("ENGINE_HOST_NAMES", "zetaris.zaindroid.me").split(",")
+    if h.strip()
+}
+
+
+def _is_engine_host(request: Request) -> bool:
+    return (request.headers.get("host") or "").split(":")[0].lower() in ENGINE_HOSTS
 VIEWS = ("hazard_timeline", "discharge_daily", "exposure_join", "provenance")
 
 logging.basicConfig(
@@ -145,8 +156,13 @@ app = FastAPI(
 
 @app.middleware("http")
 async def name_the_engine(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/api/v1.0") and _is_engine_host(request):
+        # Rewritten before routing, so the engine's own path works as-is.
+        request.scope["path"] = path = FORWARDED + path
+
     response = await call_next(request)
-    if request.url.path.startswith(FORWARDED):
+    if path.startswith(FORWARDED):
         response.headers["X-Via"] = ENGINE
     else:
         response.headers["X-Engine"] = ENGINE
@@ -157,19 +173,47 @@ async def name_the_engine(request: Request, call_next):
 
 
 @app.get("/", response_class=HTMLResponse)
-def index() -> str:
+def index(request: Request) -> str:
     """Something legible for a person who opens the host in a browser.
 
     An API-only service answering {"detail":"Not Found"} at its root tells a
     teammate nothing about how to use it.
     """
-    try:
-        counts = view_counts()
-    except Exception:
-        counts = dict.fromkeys(VIEWS, 0)
-    rows = "".join(
-        f"<tr><td><code>{SCHEMA}.{v}</code></td><td>{n:,}</td></tr>" for v, n in counts.items()
-    )
+    engine_host = _is_engine_host(request)
+    host = (request.headers.get("host") or "floodsense-sql.zaindroid.me").split(":")[0]
+
+    if engine_host:
+        # The counts here are this service's own Postgres, which is not what
+        # answers on this name, so showing them would mislead.
+        rows = "".join(f"<tr><td><code>floodsense.{v}</code></td><td>-</td></tr>" for v in VIEWS)
+        title = "FloodSense &rarr; Zetaris"
+        lede = ("A public door onto the real Zetaris, which runs on a host with no "
+                "public IP and answers only on a private network.")
+        note = ("<strong>This is the real engine.</strong> Queries on this name are "
+                "forwarded to Zetaris and its answers are passed back untouched, so "
+                "they carry no <code>engine</code> field and no <code>X-Engine</code> "
+                "-- an agent reading one reports <code>zetaris</code>, which is true. "
+                "The hop is in <code>X-Via</code>. The engine's password stays on its "
+                "own host; callers present the shared key instead, and only reads get "
+                "through.")
+    else:
+        try:
+            counts = view_counts()
+        except Exception:
+            counts = dict.fromkeys(VIEWS, 0)
+        rows = "".join(
+            f"<tr><td><code>{SCHEMA}.{v}</code></td><td>{n:,}</td></tr>"
+            for v, n in counts.items()
+        )
+        title = "FloodSense SQL"
+        lede = ("A read-only SQL endpoint over the four FloodSense contract views, "
+                "speaking the one Zetaris REST call the agents make.")
+        note = ("<strong>This is not Zetaris.</strong> Zetaris is a licensed engine each "
+                "person runs locally. This serves the same four views over Postgres so "
+                "agents can run against a real database now. Every answer carries "
+                f"<code>X-Engine: {ENGINE}</code> and an <code>engine</code> field, so a "
+                "run can report which engine answered. For the real engine, use "
+                '<a href="https://zetaris.zaindroid.me/">zetaris.zaindroid.me</a>.')
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -193,35 +237,30 @@ def index() -> str:
            font-size:13.5px; margin:0 0 12px }}
   a {{ color:#35607a }}
 </style></head><body><main>
-<h1>FloodSense SQL</h1>
-<p class="lede">A read-only SQL endpoint over the four FloodSense contract views,
-speaking the one Zetaris REST call the agents make.</p>
+<h1>{title}</h1>
+<p class="lede">{lede}</p>
 
-<p class="note"><strong>This is not Zetaris.</strong> Zetaris is a licensed engine each
-person runs locally. This serves the same four views over Postgres so agents can run
-against a real database now, and be pointed at the real engine later by changing one
-environment variable. Every answer carries <code>X-Engine: {ENGINE}</code> and an
-<code>engine</code> field, so a run can report which engine answered.</p>
+<p class="note">{note}</p>
 
 <h2>views</h2>
 <table>{rows}</table>
 
 <h2>point your agents here</h2>
-<pre>ZETARIS_REST_URL=https://floodsense-sql.zaindroid.me/api/v1.0
+<pre>ZETARIS_REST_URL=https://{host}/api/v1.0
 ZETARIS_API_KEY=&lt;ask Zain&gt;
 ZETARIS_ORG_ID=1</pre>
 <p>Nothing else changes: the agents send the same SQL they send to Zetaris, and
 <code>FF_LIVE_DATA</code> keeps its meaning.</p>
 
 <h2>or call it directly</h2>
-<pre>curl -X POST https://floodsense-sql.zaindroid.me/api/v1.0/sql-editor/sqls/run   -H "Authorization: Bearer $KEY" -H "content-type: application/json"   -d '{{"sql":"SELECT segment, count(*) FROM {SCHEMA}.exposure_join
+<pre>curl -X POST https://{host}/api/v1.0/sql-editor/sqls/run   -H "Authorization: Bearer $KEY" -H "content-type: application/json"   -d '{{"sql":"SELECT segment, count(*) FROM {SCHEMA}.exposure_join
             WHERE in_footprint GROUP BY segment","limit":20}}'</pre>
 <p>Answers <code>{{"headers":[{{"name":…}}],"data":[[…]]}}</code>. Reads only: a statement
 that is not a single SELECT or WITH is refused, and the connection is READ ONLY.</p>
 
 <h2>also</h2>
 <p><a href="/views">/views</a> — every view with its columns.
-<a href="/ready">/ready</a> — row counts, 503 if a view is empty.
+<a href="/zetaris/ready">/zetaris/ready</a> — row counts, 503 if a view is empty.
 <a href="/openapi.json">/openapi.json</a> — the spec.</p>
 </main></body></html>"""
 

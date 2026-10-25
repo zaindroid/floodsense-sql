@@ -93,19 +93,26 @@ bound to a tailnet. Anyone not on that tailnet cannot reach it. This service
 can, because it runs on a node that is both public and on the tailnet, so it
 forwards the one call the agents make:
 
+It answers on its own name, where the engine's own paths work unchanged, so
+switching to the real engine is a change of host and nothing else:
+
+```bash
+ZETARIS_REST_URL=https://zetaris.zaindroid.me/api/v1.0
+ZETARIS_ORG_ID=1
+ZETARIS_API_KEY=<the same key as SQL_API_KEY>
+```
+
+The same routes also exist under `/zetaris` on this service's own name, for
+anyone who would rather not add a hostname:
+
 ```
 POST https://floodsense-sql.zaindroid.me/zetaris/api/v1.0/sql-editor/sqls/run
 GET  https://floodsense-sql.zaindroid.me/zetaris/ready
 Authorization: Bearer $SQL_API_KEY
 ```
 
-Point the agents at it by changing one variable, and nothing else:
-
-```bash
-ZETARIS_REST_URL=https://floodsense-sql.zaindroid.me/zetaris/api/v1.0
-ZETARIS_ORG_ID=1
-ZETARIS_API_KEY=<the same key as SQL_API_KEY>
-```
+`ENGINE_HOST_NAMES` is the comma-separated list of hostnames that mean the
+real engine; it defaults to `zetaris.zaindroid.me`.
 
 Two things it adds over reaching the engine directly:
 
