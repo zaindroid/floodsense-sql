@@ -45,7 +45,6 @@ REALM = 'Basic realm="FloodSense console", charset="UTF-8"'
 # them, and an upstream that answered 401 to our Authorization header would
 # look like a broken login.
 _DROP_REQUEST = {
-    "host",
     "authorization",
     "connection",
     "keep-alive",
@@ -135,7 +134,16 @@ def forward(
 
     target = f"{URL}{path}" + (f"?{query}" if query else "")
     send = {k: v for k, v in headers if k.lower() not in _DROP_REQUEST}
-    send["Host"] = urllib.parse.urlsplit(URL).netloc
+    # The caller's own Host is kept rather than replaced with the upstream
+    # address. The console is a Next application, and its form submits are
+    # server actions, which refuse a request whose Origin does not match the
+    # host it believes it is serving -- replacing Host breaks the login while
+    # leaving every page and asset working, so it fails in the one place
+    # nobody tests first.
+    host = send.get("host") or urllib.parse.urlsplit(URL).netloc
+    send["Host"] = host
+    send.setdefault("X-Forwarded-Host", host)
+    send.setdefault("X-Forwarded-Proto", "https")
     req = urllib.request.Request(target, data=body or None, headers=send, method=method)
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT_S) as r:  # noqa: S310 - fixed host
