@@ -34,6 +34,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from psycopg.rows import tuple_row
 from psycopg_pool import ConnectionPool
 
+from app import live
+
 ENGINE = "floodsense-sql"
 VIEWS = ("hazard_timeline", "discharge_daily", "exposure_join", "provenance")
 
@@ -247,13 +249,60 @@ def health() -> dict:
 def ready() -> JSONResponse:
     try:
         counts = view_counts()
+        live_counts, live_built = live_state()
     except Exception as e:  # not ready is an answer, not a crash
         log.warning("not ready: %s", str(e)[:200])
         return JSONResponse({"status": "not ready", "reason": str(e)[:200]}, status_code=503)
     missing = [v for v, n in counts.items() if n == 0]
     if missing:
         return JSONResponse({"status": "not ready", "empty": missing}, status_code=503)
-    return JSONResponse({"status": "ok", "schema": SCHEMA, "rows": counts})
+    return JSONResponse(
+        {
+            "status": "ok",
+            "schema": SCHEMA,
+            "rows": counts,
+            # floodsense.* is built from a live fetch and may not exist yet;
+            # its absence is not a reason to call the service unhealthy.
+            "live": {"rows": live_counts, "built_at": live_built},
+        }
+    )
+
+
+def live_state() -> tuple[dict[str, int], str | None]:
+    assert pool is not None
+    with pool.connection() as conn:
+        at = live.built_at(conn)
+        if not at:
+            return {}, None
+        out = {}
+        for v in VIEWS:
+            try:
+                row = conn.execute(f"SELECT count(*) FROM floodsense.{v}").fetchone()
+                out[v] = int(row[0]) if row else 0
+            except Exception:
+                conn.rollback()
+                out[v] = 0
+        return out, at
+
+
+@app.post("/admin/refresh-live")
+def refresh_live(authorization: str | None = Header(default=None)) -> dict:
+    """Rebuild floodsense.* from Open-Meteo now.
+
+    This is what a federating engine would not need: Zetaris reaches the API
+    at query time, this has to be told to go and look.
+    """
+    _bearer(authorization)
+    assert pool is not None
+    with pool.connection() as conn:
+        conn.read_only = False
+        try:
+            built = live.build(conn)
+        except Exception as e:
+            log.warning("live refresh failed: %s", str(e)[:200])
+            raise HTTPException(status_code=502, detail=str(e)[:300]) from e
+    counts, at = live_state()
+    return {"engine": ENGINE, "built": built, "rows": counts, "built_at": at}
 
 
 @app.get("/version")
