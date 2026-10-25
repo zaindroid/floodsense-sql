@@ -26,9 +26,11 @@ import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
+from typing import Any
+
 import psycopg
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from psycopg.rows import tuple_row
 from psycopg_pool import ConnectionPool
 
@@ -143,6 +145,96 @@ async def name_the_engine(request: Request, call_next):
 
 
 # --- platform contract ----------------------------------------------------
+
+
+@app.get("/", response_class=HTMLResponse)
+def index() -> str:
+    """Something legible for a person who opens the host in a browser.
+
+    An API-only service answering {"detail":"Not Found"} at its root tells a
+    teammate nothing about how to use it.
+    """
+    try:
+        counts = view_counts()
+    except Exception:
+        counts = dict.fromkeys(VIEWS, 0)
+    rows = "".join(
+        f"<tr><td><code>{SCHEMA}.{v}</code></td><td>{n:,}</td></tr>" for v, n in counts.items()
+    )
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FloodSense SQL</title>
+<style>
+  :root {{ color-scheme: light }}
+  body {{ margin:0; background:#fafaf8; color:#1b1f24;
+         font:15px/1.6 Archivo,"Helvetica Neue",Arial,sans-serif; }}
+  main {{ max-width:62ch; margin:0 auto; padding:48px 24px 72px }}
+  h1 {{ font-size:22px; font-weight:500; margin:0 0 6px; letter-spacing:-0.01em }}
+  h2 {{ font-size:12px; font-weight:500; color:#5c636c; margin:34px 0 10px;
+        border-top:1px solid #1b1f24; padding-top:9px }}
+  p {{ margin:0 0 12px; max-width:58ch }}
+  .lede {{ color:#5c636c; margin-bottom:26px }}
+  table {{ border-collapse:collapse; width:100%; font-size:13.5px }}
+  td {{ padding:7px 0; border-top:1px solid #dcdcd6 }}
+  td+td {{ text-align:right; font-variant-numeric:tabular-nums }}
+  code,pre {{ font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace }}
+  pre {{ background:#f2f2ee; padding:12px 14px; overflow-x:auto; margin:0 0 12px }}
+  .note {{ border-left:2px solid #9a6b1f; padding:4px 0 4px 12px; color:#5c636c;
+           font-size:13.5px; margin:0 0 12px }}
+  a {{ color:#35607a }}
+</style></head><body><main>
+<h1>FloodSense SQL</h1>
+<p class="lede">A read-only SQL endpoint over the four FloodSense contract views,
+speaking the one Zetaris REST call the agents make.</p>
+
+<p class="note"><strong>This is not Zetaris.</strong> Zetaris is a licensed engine each
+person runs locally. This serves the same four views over Postgres so agents can run
+against a real database now, and be pointed at the real engine later by changing one
+environment variable. Every answer carries <code>X-Engine: {ENGINE}</code> and an
+<code>engine</code> field, so a run can report which engine answered.</p>
+
+<h2>views</h2>
+<table>{rows}</table>
+
+<h2>point your agents here</h2>
+<pre>ZETARIS_REST_URL=https://floodsense-sql.zaindroid.me/api/v1.0
+ZETARIS_API_KEY=&lt;ask Zain&gt;
+ZETARIS_ORG_ID=1</pre>
+<p>Nothing else changes: the agents send the same SQL they send to Zetaris, and
+<code>FF_LIVE_DATA</code> keeps its meaning.</p>
+
+<h2>or call it directly</h2>
+<pre>curl -X POST https://floodsense-sql.zaindroid.me/api/v1.0/sql-editor/sqls/run   -H "Authorization: Bearer $KEY" -H "content-type: application/json"   -d '{{"sql":"SELECT segment, count(*) FROM {SCHEMA}.exposure_join
+            WHERE in_footprint GROUP BY segment","limit":20}}'</pre>
+<p>Answers <code>{{"headers":[{{"name":…}}],"data":[[…]]}}</code>. Reads only: a statement
+that is not a single SELECT or WITH is refused, and the connection is READ ONLY.</p>
+
+<h2>also</h2>
+<p><a href="/views">/views</a> — every view with its columns.
+<a href="/ready">/ready</a> — row counts, 503 if a view is empty.
+<a href="/openapi.json">/openapi.json</a> — the spec.</p>
+</main></body></html>"""
+
+
+@app.get("/views")
+def views() -> JSONResponse:
+    """What is queryable here, so a caller does not have to ask a person."""
+    assert pool is not None
+    out: dict[str, Any] = {}
+    with pool.connection() as conn:
+        for v in VIEWS:
+            cols = conn.execute(
+                "SELECT column_name, data_type FROM information_schema.columns "
+                "WHERE table_schema = %s AND table_name = %s ORDER BY ordinal_position",
+                (SCHEMA, v),
+            ).fetchall()
+            n = conn.execute(f"SELECT count(*) FROM {SCHEMA}.{v}").fetchone()
+            out[f"{SCHEMA}.{v}"] = {
+                "rows": int(n[0]) if n else 0,
+                "columns": [{"name": c[0], "type": c[1]} for c in cols],
+            }
+    return JSONResponse({"engine": ENGINE, "schema": SCHEMA, "views": out})
 
 
 @app.get("/health")
