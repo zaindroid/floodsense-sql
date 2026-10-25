@@ -576,6 +576,10 @@ async def console_proxy(path: str, request: Request) -> Response:
 
     r = Response(content=payload, status_code=status)
     r.headers["X-Via"] = ENGINE
+    # Nothing relayed may rest in a shared cache: the gate is the only thing
+    # in front of the console, and a cached reply skips it entirely.
+    r.headers["Cache-Control"] = "no-store"
+    r.headers["Vary"] = "Authorization, Cookie"
     for k, v in headers:
         if k.lower() == "set-cookie":
             r.raw_headers.append((b"set-cookie", v.encode("latin-1", "replace")))

@@ -69,6 +69,16 @@ _DROP_RESPONSE = {
     "transfer-encoding",
     "content-length",
     "content-encoding",
+    # The console labels its bundles "public, max-age=31536000, immutable".
+    # Behind a CDN that is a hole rather than a saving: measured, an asset
+    # fetched once with the password came back to an anonymous request with
+    # cf-cache-status: HIT. Whatever is relayed here is caller-specific, so
+    # the caching policy is this service's to set, not the console's.
+    "cache-control",
+    "expires",
+    "pragma",
+    "etag",
+    "last-modified",
 }
 
 
